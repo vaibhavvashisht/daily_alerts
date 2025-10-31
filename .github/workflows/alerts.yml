@@ -1,0 +1,41 @@
+name: daily-discord-alerts
+
+on:
+  schedule:
+    - cron: '55 13 * * 1-5'
+    - cron: '30 15 * * 1-5'
+    - cron: '10 21 * * 1-5'
+  workflow_dispatch: {}
+
+jobs:
+  run-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pick phase (premarket/early/after) based on UTC time
+        id: phase
+        run: |
+          H=$(date -u +%H)
+          M=$(date -u +%M)
+          if   [ "$M" = "55" ]; then echo "which=premarket" >> $GITHUB_OUTPUT
+          elif [ "$M" = "30" ]; then echo "which=early"     >> $GITHUB_OUTPUT
+          else echo "which=after" >> $GITHUB_OUTPUT; fi
+
+      - name: Run alerts
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          EQUITY: ${{ secrets.EQUITY }}
+          RISK_PER_TRADE: ${{ secrets.RISK_PER_TRADE }}
+        run: |
+          python daily_alerts.py --when ${{ steps.phase.outputs.which }} --limit 25
