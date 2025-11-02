@@ -117,20 +117,64 @@ def make_alerts(phase: str, limit: int = 20, window_days: int = 504):
     return make_alert_lines(screened, f"{phase} — Screened top {limit}")
 
 
-def send_discord_message(content_lines):
+import time
+import requests
+
+# keep using your existing global: DISCORD_WEBHOOK_URL
+
+def _chunk_lines(lines, max_len=1900):
+    """
+    Pack lines into chunks with total length <= max_len (leave headroom for numbering).
+    Prefers breaking at line boundaries so Discord gets multiple messages cleanly.
+    """
+    chunks, cur, cur_len = [], [], 0
+    for ln in lines:
+        # hard cap single line to avoid surprises
+        ln = ln.strip()
+        if len(ln) > max_len:
+            ln = ln[:max_len - 3] + "..."
+        add = (len(ln) + 1)  # +1 for newline
+        if cur_len + add > max_len and cur:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(ln)
+        cur_len += add
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+def send_discord_message(content_lines, title=None, sleep_between=0.6):
+    """
+    Post long messages to Discord in safe chunks (<2000 chars).
+    If DISCORD_WEBHOOK_URL is missing, we print to logs and return.
+    """
     if not DISCORD_WEBHOOK_URL:
-        print("[WARN] DISCORD_WEBHOOK_URL not set; skipping post.")
+        print("[WARN] DISCORD_WEBHOOK_URL not set; printing output instead:")
         print("\n".join(content_lines))
         return
-    payload = {"content": "\n".join(content_lines)}
-    try:
-        r = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        if r.status_code >= 400:
-            print(f"[ERROR] Discord webhook failed: {r.status_code} {r.text}")
-        else:
-            print(f"[OK] Discord alert posted: {r.status_code}")
-    except Exception as e:
-        print(f"[ERROR] Failed to send Discord message: {e}")
+
+    # Optional header line
+    lines = []
+    if title:
+        lines.append(f"**{title}**")
+    lines.extend(content_lines)
+
+    # Build chunks comfortably under the 2000 limit
+    payloads = _chunk_lines(lines, max_len=1900)  # 1900 leaves room for numbering
+
+    for i, body in enumerate(payloads, 1):
+        numbered = f"(part {i}/{len(payloads)})\n{body}" if len(payloads) > 1 else body
+        payload = {"content": numbered}
+        try:
+            r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=20)
+            print(f"[DEBUG] Discord post {i}/{len(payloads)} -> {r.status_code}")
+            if r.status_code >= 400:
+                print(f"[ERROR] Discord webhook failed: {r.status_code} {r.text[:200]}")
+                # Don’t bail mid-stream; try to post remaining chunks, but you can break if desired
+            time.sleep(sleep_between)  # mild pacing to avoid rate-limits
+        except Exception as e:
+            print(f"[ERROR] Failed to send Discord message (part {i}): {e}")
+
 
 
 # ---------------------------------------
